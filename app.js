@@ -205,7 +205,7 @@ async function get_app_server() {
 		var payload_fire_data = {
 			id: payload_fire_id,
 			url: req.body.uri,
-			ip_address: req.connection.remoteAddress.toString(),
+			ip_address: (req.ip || req.connection.remoteAddress).toString(),
 			referer: req.body.referrer,
 			user_agent: req.body['user-agent'],
 			cookies: req.body.cookies,
