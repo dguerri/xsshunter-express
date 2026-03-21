@@ -176,30 +176,33 @@ async function get_app_server() {
 			"status": "success"
 		}).end();
 
-    	// Multer stores the image in the /tmp/ dir. We use this source image
-    	// to write a gzipped version in the user-provided dir and then delete
-    	// the original uncompressed image.
-    	const payload_fire_image_id = uuid.v4();
-    	const payload_fire_image_filename = `${SCREENSHOTS_DIR}/${payload_fire_image_id}.png.gz`;
-    	const multer_temp_image_path = req.file.path;
+    	// Screenshot is optional — the probe omits it when html2canvas fails
+    	// (SVG-heavy pages, broken images, safety-timer fallback). Guard req.file
+    	// so a missing screenshot doesn't crash the handler and lose all other data.
+    	let payload_fire_image_id = null;
+    	if (req.file) {
+    		payload_fire_image_id = uuid.v4();
+    		const payload_fire_image_filename = `${SCREENSHOTS_DIR}/${payload_fire_image_id}.png.gz`;
+    		const multer_temp_image_path = req.file.path;
 
-    	// We also gzip the image so we don't waste disk space
-    	const gzip = zlib.createGzip();
-    	const output_gzip_stream = fs.createWriteStream(payload_fire_image_filename);
-    	const input_read_stream = fs.createReadStream(multer_temp_image_path);
+    		// We also gzip the image so we don't waste disk space
+    		const gzip = zlib.createGzip();
+    		const output_gzip_stream = fs.createWriteStream(payload_fire_image_filename);
+    		const input_read_stream = fs.createReadStream(multer_temp_image_path);
 
-    	// When the "finish" event is called we delete the original
-    	// uncompressed image file left behind by multer.
-    	input_read_stream.pipe(gzip).pipe(output_gzip_stream).on('finish', async (error) => {
-    		if(error) {
-    			console.error(`An error occurred while writing the XSS payload screenshot (gzipped) to disk:`);
-    			console.error(error);
-    		}
+    		// When the "finish" event is called we delete the original
+    		// uncompressed image file left behind by multer.
+    		input_read_stream.pipe(gzip).pipe(output_gzip_stream).on('finish', async (error) => {
+    			if(error) {
+    				console.error(`An error occurred while writing the XSS payload screenshot (gzipped) to disk:`);
+    				console.error(error);
+    			}
 
-    		console.log(`Gzip stream complete, deleting multer temp file: ${multer_temp_image_path}`);
+    			console.log(`Gzip stream complete, deleting multer temp file: ${multer_temp_image_path}`);
 
-    		await asyncfs.unlink(multer_temp_image_path);
-    	});
+    			await asyncfs.unlink(multer_temp_image_path);
+    		});
+    	}
 
     	const payload_fire_id = uuid.v4();
 		var payload_fire_data = {

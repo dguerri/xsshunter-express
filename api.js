@@ -209,6 +209,7 @@ async function set_up_api_server(app) {
         }
     }
     app.delete(constants.API_BASE_PATH + 'payloadfires', validate({ body: DeletePayloadFiresSchema }), async (req, res) => {
+    	try {
     	const ids_to_delete = req.body.ids;
 
     	// Pull the corresponding screenshot_ids from the DB so
@@ -222,11 +223,11 @@ async function set_up_api_server(app) {
     		},
     		attributes: ['id', 'screenshot_id']
     	});
-    	const screenshots_to_delete = screenshot_id_records.map(payload => {
-    		return `${SCREENSHOTS_DIR}/${payload.screenshot_id}.png.gz`;
-    	});
+    	const screenshots_to_delete = screenshot_id_records
+    		.filter(payload => payload.screenshot_id !== null)
+    		.map(payload => `${SCREENSHOTS_DIR}/${payload.screenshot_id}.png.gz`);
     	await Promise.all(screenshots_to_delete.map(screenshot_path => {
-    		return asyncfs.unlink(screenshot_path);
+    		return asyncfs.unlink(screenshot_path).catch(() => {});
     	}));
     	const payload_fires = await PayloadFireResults.destroy({
     		where: {
@@ -240,6 +241,10 @@ async function set_up_api_server(app) {
             'success': true,
             'result': {}
         }).end();
+    	} catch(e) {
+    		console.error('Error deleting payload fires:', e);
+    		res.status(500).json({ 'success': false, 'error': e.message }).end();
+    	}
     });
 
     /*
