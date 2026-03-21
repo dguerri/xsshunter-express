@@ -23,6 +23,17 @@
                                     <p class="card-text text-right">
                                         <i>Fired {{report.createdAt | moment("from", "now") }}</i>
                                     </p>
+                                    <div class="mb-2" v-if="has_intel(report.dom)">
+                                        <span class="badge badge-danger badge-pill mr-1" v-if="parse_intel(report.dom).secrets && parse_intel(report.dom).secrets.length > 0">
+                                            <i class="fas fa-key"></i> {{parse_intel(report.dom).secrets.length}} Secret(s)
+                                        </span>
+                                        <span class="badge badge-warning badge-pill mr-1" v-if="parse_intel(report.dom).cors">
+                                            <i class="fas fa-globe"></i> CORS
+                                        </span>
+                                        <span class="badge badge-warning badge-pill mr-1" v-if="parse_intel(report.dom).git_exposed">
+                                            <i class="fab fa-git"></i> .git exposed
+                                        </span>
+                                    </div>
                                     <div class="mt-3 button-full">
                                         <base-button class="m-0 btn-fill" simple type="primary" v-on:click="expand_report(report.id)" v-if="!is_report_id_expanded(report.id)">
                                             <i class="fas fa-angle-double-down"></i> Expand Report
@@ -173,6 +184,31 @@
                                         </div>
                                         <hr />
                                     </div>
+                                    <div v-if="has_intel(report.dom)">
+                                        <div>
+                                            <p class="report-section-label mr-2">Intel</p>
+                                            <small slot="helperText" class="form-text text-muted report-section-description">
+                                                Secrets and misconfigurations detected in the page source.
+                                            </small>
+                                        </div>
+                                        <div class="m-2 mt-4">
+                                            <div v-if="parse_intel(report.dom).secrets && parse_intel(report.dom).secrets.length > 0">
+                                                <p class="mb-1"><strong>Secrets</strong></p>
+                                                <div v-for="secret in parse_intel(report.dom).secrets" class="mb-1">
+                                                    <span class="badge badge-danger mr-1">{{secret.type}}</span><code>{{secret.value}}</code>
+                                                </div>
+                                            </div>
+                                            <div v-if="parse_intel(report.dom).cors" class="mt-2">
+                                                <p class="mb-1"><strong>CORS</strong> <small class="text-muted">Access-Control-Allow-Origin</small></p>
+                                                <code>{{parse_intel(report.dom).cors}}</code>
+                                            </div>
+                                            <div v-if="parse_intel(report.dom).git_exposed" class="mt-2">
+                                                <p class="mb-1"><strong>.git/config exposed</strong></p>
+                                                <pre class="text-warning" style="white-space:pre-wrap;font-size:12px;">{{parse_intel(report.dom).git_exposed}}</pre>
+                                            </div>
+                                        </div>
+                                        <hr />
+                                    </div>
                                     <div>
                                         <div>
                                             <p class="report-section-label mr-2">Other</p>
@@ -290,9 +326,21 @@ export default {
             link.download = 'xss-page-contents.html';
             link.click();
         },
+        parse_intel(dom) {
+            try {
+                const match = /<!--\s*PROBE-INTEL:\s*(\{.*?\})\s*-->/.exec(dom);
+                if (match) return JSON.parse(match[1]);
+            } catch(e) {}
+            return {};
+        },
+        has_intel(dom) {
+            const intel = this.parse_intel(dom);
+            return (intel.secrets && intel.secrets.length > 0) || intel.cors || intel.git_exposed;
+        },
         format_with_commas(input_number) {
             return input_number.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",");
         }
+
     },
     computed: {
         total_pages() {
