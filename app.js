@@ -233,13 +233,23 @@ async function get_app_server() {
             payload_fire_data.correlated_request = correlated_request_rec.request;
         }
 
-		// Store payload fire results in the database
-		const new_payload_fire_result = await PayloadFireResults.create(payload_fire_data);
+		// The HTTP response has already been sent above, so this runs
+		// fire-and-forget. Any rejection here (e.g. a DB error) can't be
+		// surfaced to the client and would otherwise become an
+		// UnhandledPromiseRejection that can crash the process — so catch
+		// and log it instead.
+		try {
+			// Store payload fire results in the database
+			const new_payload_fire_result = await PayloadFireResults.create(payload_fire_data);
 
-		// Send out notification via configured notification channel
-		if(process.env.SMTP_EMAIL_NOTIFICATIONS_ENABLED === "true") {
-			payload_fire_data.screenshot_url = `https://${process.env.HOSTNAME}/screenshots/${payload_fire_data.screenshot_id}.png`;
-			await notification.send_email_notification(payload_fire_data);
+			// Send out notification via configured notification channel
+			if(process.env.SMTP_EMAIL_NOTIFICATIONS_ENABLED === "true") {
+				payload_fire_data.screenshot_url = `https://${process.env.HOSTNAME}/screenshots/${payload_fire_data.screenshot_id}.png`;
+				await notification.send_email_notification(payload_fire_data);
+			}
+		} catch(error) {
+			console.error(`Failed to persist/notify XSS payload fire (id: ${payload_fire_id}):`);
+			console.error(error);
 		}
 	});
 

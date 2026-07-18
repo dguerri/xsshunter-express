@@ -156,40 +156,19 @@ PayloadFireResults.init({
 }, {
 	sequelize,
 	modelName: 'payload_fire_results',
+	// NOTE: The unbounded free-text columns (url, referer, user_agent,
+	// cookies, title, origin) are intentionally NOT indexed. A Postgres
+	// btree index entry cannot exceed ~8191 bytes, and these columns hold
+	// unbounded attacker/victim-supplied data (a large cookie/referer/url
+	// would make the whole INSERT fail with "index row requires N bytes").
+	// Only fixed-size or bounded columns are indexed. If search-by-origin is
+	// ever needed, use a hash index (USING hash) rather than btree.
 	indexes: [
 		{
-			unique: false,
-			fields: ['url'],
-			method: 'BTREE',
-		},
-		{
+			// Bounded (socket peer IP, ~45 chars max) and useful for
+			// correlating fires from the same source.
 			unique: false,
 			fields: ['ip_address'],
-			method: 'BTREE',
-		},
-		{
-			unique: false,
-			fields: ['referer'],
-			method: 'BTREE',
-		},
-		{
-			unique: false,
-			fields: ['user_agent'],
-			method: 'BTREE',
-		},
-		{
-			unique: false,
-			fields: ['cookies'],
-			method: 'BTREE',
-		},
-		{
-			unique: false,
-			fields: ['title'],
-			method: 'BTREE',
-		},
-		{
-			unique: false,
-			fields: ['origin'],
 			method: 'BTREE',
 		},
 		{
@@ -200,6 +179,12 @@ PayloadFireResults.init({
 		{
 			unique: false,
 			fields: ['browser_timestamp'],
+			method: 'BTREE',
+		},
+		{
+			// Used by the payload-fire list ordering (ORDER BY createdAt DESC).
+			unique: false,
+			fields: ['createdAt'],
 			method: 'BTREE',
 		}
 	]
