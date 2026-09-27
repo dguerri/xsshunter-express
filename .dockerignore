@@ -1,0 +1,7 @@
+node_modules
+front-end/node_modules
+front-end/dist
+payload-fire-images
+postgres-db-data
+.git
+.serena

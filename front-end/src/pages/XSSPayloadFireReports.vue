@@ -9,7 +9,7 @@
                             <hr />
                             <div v-for="report in payload_fire_reports">
                                 <card class="mb-0">
-                                    <div class="screenshot-image-container mb-2">
+                                    <div class="screenshot-image-container mb-2" v-if="report.screenshot_id && report.screenshot_id !== 'null'">
                                         <a v-bind:href="base_api_path + '/screenshots/' + report.screenshot_id + '.png'" target="_blank">
                                             <img slot="image" class="card-img-top report-image" v-bind:src="base_api_path + '/screenshots/' + report.screenshot_id + '.png'" alt="XSS Screenshot" />
                                         </a>

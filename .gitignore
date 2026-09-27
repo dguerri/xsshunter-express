@@ -12,3 +12,5 @@ ssldata/*
 config.env
 payload-fire-images/*.gz
 payload-fire-images/*.png
+front-end/node_modules/
+.serena/
